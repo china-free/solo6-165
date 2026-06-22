@@ -88,12 +88,7 @@ async function startMonitoring(options: MonitorOptions, format: 'json' | 'pretty
       const newSnapshot = snapshotEngine.takeSnapshot();
       const events = snapshotEngine.diff(newSnapshot);
 
-      let enrichedEvents = events;
-      if (options.showBefore && events.length > 0) {
-        enrichedEvents = snapshotEngine.enrichEvents(events);
-      }
-
-      for (const event of enrichedEvents) {
+      for (const event of events) {
         emitEvent(event, format, options.colorize);
       }
     } catch (err: any) {

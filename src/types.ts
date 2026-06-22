@@ -10,14 +10,14 @@ export interface ChangeEvent {
   after?: Record<string, unknown>;
 }
 
-export interface TableSnapshot {
-  tableName: string;
-  rows: Map<number, string>;
+export interface RowEntry {
+  hash: string;
+  data: Record<string, unknown>;
 }
 
 export interface DatabaseSnapshot {
   dbPath: string;
-  tables: Map<string, Map<number, string>>;
+  tables: Map<string, Map<number, RowEntry>>;
 }
 
 export interface MonitorOptions {

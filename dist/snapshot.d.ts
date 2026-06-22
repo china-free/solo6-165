@@ -16,6 +16,7 @@ export declare class SnapshotEngine {
     diff(newSnapshot: DatabaseSnapshot): ChangeEvent[];
     enrichEvents(events: ChangeEvent[]): ChangeEvent[];
     private createEvent;
+    private extractRowData;
     private hashRow;
     private computeRowId;
     reset(): void;

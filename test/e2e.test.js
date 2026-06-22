@@ -25,7 +25,7 @@ async function main() {
   console.log('Step 1: Creating test database...');
   execSync('node ' + path.join(__dirname, 'setup.js'), { stdio: 'inherit' });
 
-  console.log('\nStep 2: Starting sqlite-cdc in background...');
+  console.log('\nStep 2: Starting sqlite-cdc with --before...');
   const { spawn } = require('child_process');
   const cdc = spawn('node', [path.join(__dirname, '..', 'dist', 'cli.js'), DB_PATH, '-v', '--before'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -77,22 +77,72 @@ async function main() {
   console.log(`Total events captured: ${events.length}`);
 
   let inserts = 0, updates = 0, deletes = 0;
+  let deleteWithBefore = false;
+  let updateWithBeforeAndAfter = false;
+  let insertWithAfter = false;
+  const parsedEvents = [];
+
   for (const e of events) {
     try {
       const obj = JSON.parse(e);
-      if (obj.operation === 'INSERT') inserts++;
-      else if (obj.operation === 'UPDATE') updates++;
-      else if (obj.operation === 'DELETE') deletes++;
+      parsedEvents.push(obj);
+      if (obj.operation === 'INSERT') {
+        inserts++;
+        if (obj.after) insertWithAfter = true;
+      }
+      else if (obj.operation === 'UPDATE') {
+        updates++;
+        if (obj.before && obj.after) updateWithBeforeAndAfter = true;
+      }
+      else if (obj.operation === 'DELETE') {
+        deletes++;
+        if (obj.before) deleteWithBefore = true;
+      }
     } catch {}
   }
   console.log(`INSERTs: ${inserts}, UPDATEs: ${updates}, DELETEs: ${deletes}`);
+  console.log(`INSERT has after: ${insertWithAfter}`);
+  console.log(`UPDATE has before+after: ${updateWithBeforeAndAfter}`);
+  console.log(`DELETE has before: ${deleteWithBefore}`);
 
-  if (inserts >= 2 && updates >= 1 && deletes >= 1) {
-    console.log('\n✅ E2E test PASSED - all operation types detected!');
-  } else {
-    console.log('\n❌ E2E test FAILED - expected at least 2 INSERTs, 1 UPDATE, 1 DELETE');
-    console.log('Events:', events);
+  let failed = false;
+
+  if (inserts < 2 || updates < 1 || deletes < 1) {
+    console.log('\n❌ Not all operation types detected');
+    failed = true;
+  }
+
+  if (!insertWithAfter) {
+    console.log('\n❌ INSERT event missing "after" field');
+    failed = true;
+  }
+
+  if (!updateWithBeforeAndAfter) {
+    console.log('\n❌ UPDATE event missing "before" and/or "after" field');
+    failed = true;
+  }
+
+  if (!deleteWithBefore) {
+    console.log('\n❌ DELETE event missing "before" field - the original bug!');
+    failed = true;
+  }
+
+  const deleteEvent = parsedEvents.find(e => e.operation === 'DELETE');
+  if (deleteEvent && deleteEvent.before) {
+    if (deleteEvent.before.name !== 'Bob') {
+      console.log(`\n❌ DELETE before.name expected "Bob", got "${deleteEvent.before.name}"`);
+      failed = true;
+    } else {
+      console.log(`\n✅ DELETE before.name = "Bob" (correct)`);
+    }
+  }
+
+  if (failed) {
+    console.log('\n❌ E2E test FAILED');
+    console.log('Parsed events:', JSON.stringify(parsedEvents, null, 2));
     process.exit(1);
+  } else {
+    console.log('\n✅ E2E test PASSED - all operation types + before/after data verified!');
   }
 
   try { fs.unlinkSync(DB_PATH); } catch {}

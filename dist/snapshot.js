@@ -125,11 +125,18 @@ class SnapshotEngine {
                             if (columns[i] === '_rowid_') {
                                 rowidValue = row[i];
                             }
-                            rowObj[columns[i]] = row[i];
+                            const val = row[i];
+                            if (val instanceof Uint8Array) {
+                                rowObj[columns[i]] = `<blob ${val.length}B>`;
+                            }
+                            else {
+                                rowObj[columns[i]] = val;
+                            }
                         }
                         const rowid = table.hasRowid && rowidValue !== null ? rowidValue : this.computeRowId(rowObj);
                         const hash = this.hashRow(rowObj, table.hasRowid);
-                        rowMap.set(rowid, hash);
+                        const data = this.extractRowData(rowObj, table.hasRowid);
+                        rowMap.set(rowid, { hash, data });
                     }
                 }
             }
@@ -150,33 +157,37 @@ class SnapshotEngine {
             return events;
         }
         const now = new Date().toISOString();
+        const includeBefore = this.options.showBefore;
         for (const [tableName, newRowMap] of newSnapshot.tables) {
             const prevRowMap = this.prevSnapshot.tables.get(tableName);
             if (!prevRowMap) {
-                for (const [rowid, _] of newRowMap) {
-                    events.push(this.createEvent(now, tableName, 'INSERT', rowid));
+                for (const [rowid, entry] of newRowMap) {
+                    events.push(this.createEvent(now, tableName, 'INSERT', rowid, undefined, entry.data));
                 }
                 continue;
             }
-            for (const [rowid, newHash] of newRowMap) {
+            for (const [rowid, newEntry] of newRowMap) {
                 if (!prevRowMap.has(rowid)) {
-                    events.push(this.createEvent(now, tableName, 'INSERT', rowid));
+                    events.push(this.createEvent(now, tableName, 'INSERT', rowid, undefined, newEntry.data));
                 }
-                else if (prevRowMap.get(rowid) !== newHash) {
-                    events.push(this.createEvent(now, tableName, 'UPDATE', rowid));
+                else if (prevRowMap.get(rowid).hash !== newEntry.hash) {
+                    const before = includeBefore ? prevRowMap.get(rowid).data : undefined;
+                    events.push(this.createEvent(now, tableName, 'UPDATE', rowid, before, newEntry.data));
                 }
             }
-            for (const [rowid, _] of prevRowMap) {
+            for (const [rowid, prevEntry] of prevRowMap) {
                 if (!newRowMap.has(rowid)) {
-                    events.push(this.createEvent(now, tableName, 'DELETE', rowid));
+                    const before = includeBefore ? prevEntry.data : undefined;
+                    events.push(this.createEvent(now, tableName, 'DELETE', rowid, before));
                 }
             }
         }
         for (const [tableName, prevRowMap] of this.prevSnapshot.tables) {
             if (!newSnapshot.tables.has(tableName)) {
                 const now2 = new Date().toISOString();
-                for (const [rowid, _] of prevRowMap) {
-                    events.push(this.createEvent(now2, tableName, 'DELETE', rowid));
+                for (const [rowid, prevEntry] of prevRowMap) {
+                    const before = includeBefore ? prevEntry.data : undefined;
+                    events.push(this.createEvent(now2, tableName, 'DELETE', rowid, before));
                 }
             }
         }
@@ -184,45 +195,24 @@ class SnapshotEngine {
         return events;
     }
     enrichEvents(events) {
-        if (!this.options.showBefore)
-            return events;
-        const db = this.openDb();
-        const enriched = [];
-        for (const event of events) {
-            if (event.operation === 'DELETE') {
-                enriched.push(event);
-                continue;
-            }
-            try {
-                const results = db.exec(`SELECT * FROM "${event.table}" WHERE rowid = ${event.rowid}`);
-                if (results.length > 0 && results[0].values.length > 0) {
-                    const columns = results[0].columns;
-                    const row = results[0].values[0];
-                    const record = {};
-                    for (let i = 0; i < columns.length; i++) {
-                        const val = row[i];
-                        if (val instanceof Uint8Array) {
-                            record[columns[i]] = `<blob ${val.length}B>`;
-                        }
-                        else {
-                            record[columns[i]] = val;
-                        }
-                    }
-                    enriched.push({ ...event, after: record });
-                }
-                else {
-                    enriched.push(event);
-                }
-            }
-            catch {
-                enriched.push(event);
-            }
-        }
-        db.close();
-        return enriched;
+        return events;
     }
-    createEvent(timestamp, table, operation, rowid) {
-        return { timestamp, database: this.dbPath, table, operation, rowid };
+    createEvent(timestamp, table, operation, rowid, before, after) {
+        const event = { timestamp, database: this.dbPath, table, operation, rowid };
+        if (before)
+            event.before = before;
+        if (after)
+            event.after = after;
+        return event;
+    }
+    extractRowData(row, hasRowid) {
+        const data = {};
+        for (const key of Object.keys(row)) {
+            if (hasRowid && key === '_rowid_')
+                continue;
+            data[key] = row[key];
+        }
+        return data;
     }
     hashRow(row, hasRowid) {
         const parts = [];

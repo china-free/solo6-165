@@ -1,7 +1,7 @@
 import initSqlJs, { Database } from 'sql.js';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { ChangeEvent, DatabaseSnapshot, TableInfo, MonitorOptions } from './types';
+import { ChangeEvent, DatabaseSnapshot, RowEntry, TableInfo, MonitorOptions } from './types';
 
 export class SnapshotEngine {
   private dbPath: string;
@@ -76,12 +76,12 @@ export class SnapshotEngine {
 
   takeSnapshot(): DatabaseSnapshot {
     const db = this.openDb();
-    const tables = new Map<string, Map<number, string>>();
+    const tables = new Map<string, Map<number, RowEntry>>();
 
     const tableList = this.getTableList(db);
 
     for (const table of tableList) {
-      const rowMap = new Map<number, string>();
+      const rowMap = new Map<number, RowEntry>();
       try {
         let sql: string;
         if (table.hasRowid) {
@@ -100,11 +100,17 @@ export class SnapshotEngine {
               if (columns[i] === '_rowid_') {
                 rowidValue = row[i] as number;
               }
-              rowObj[columns[i]] = row[i];
+              const val = row[i];
+              if (val instanceof Uint8Array) {
+                rowObj[columns[i]] = `<blob ${val.length}B>`;
+              } else {
+                rowObj[columns[i]] = val;
+              }
             }
             const rowid = table.hasRowid && rowidValue !== null ? rowidValue : this.computeRowId(rowObj);
             const hash = this.hashRow(rowObj, table.hasRowid);
-            rowMap.set(rowid, hash);
+            const data = this.extractRowData(rowObj, table.hasRowid);
+            rowMap.set(rowid, { hash, data });
           }
         }
       } catch (err: any) {
@@ -129,28 +135,31 @@ export class SnapshotEngine {
     }
 
     const now = new Date().toISOString();
+    const includeBefore = this.options.showBefore;
 
     for (const [tableName, newRowMap] of newSnapshot.tables) {
       const prevRowMap = this.prevSnapshot.tables.get(tableName);
 
       if (!prevRowMap) {
-        for (const [rowid, _] of newRowMap) {
-          events.push(this.createEvent(now, tableName, 'INSERT', rowid));
+        for (const [rowid, entry] of newRowMap) {
+          events.push(this.createEvent(now, tableName, 'INSERT', rowid, undefined, entry.data));
         }
         continue;
       }
 
-      for (const [rowid, newHash] of newRowMap) {
+      for (const [rowid, newEntry] of newRowMap) {
         if (!prevRowMap.has(rowid)) {
-          events.push(this.createEvent(now, tableName, 'INSERT', rowid));
-        } else if (prevRowMap.get(rowid) !== newHash) {
-          events.push(this.createEvent(now, tableName, 'UPDATE', rowid));
+          events.push(this.createEvent(now, tableName, 'INSERT', rowid, undefined, newEntry.data));
+        } else if (prevRowMap.get(rowid)!.hash !== newEntry.hash) {
+          const before = includeBefore ? prevRowMap.get(rowid)!.data : undefined;
+          events.push(this.createEvent(now, tableName, 'UPDATE', rowid, before, newEntry.data));
         }
       }
 
-      for (const [rowid, _] of prevRowMap) {
+      for (const [rowid, prevEntry] of prevRowMap) {
         if (!newRowMap.has(rowid)) {
-          events.push(this.createEvent(now, tableName, 'DELETE', rowid));
+          const before = includeBefore ? prevEntry.data : undefined;
+          events.push(this.createEvent(now, tableName, 'DELETE', rowid, before));
         }
       }
     }
@@ -158,8 +167,9 @@ export class SnapshotEngine {
     for (const [tableName, prevRowMap] of this.prevSnapshot.tables) {
       if (!newSnapshot.tables.has(tableName)) {
         const now2 = new Date().toISOString();
-        for (const [rowid, _] of prevRowMap) {
-          events.push(this.createEvent(now2, tableName, 'DELETE', rowid));
+        for (const [rowid, prevEntry] of prevRowMap) {
+          const before = includeBefore ? prevEntry.data : undefined;
+          events.push(this.createEvent(now2, tableName, 'DELETE', rowid, before));
         }
       }
     }
@@ -169,42 +179,7 @@ export class SnapshotEngine {
   }
 
   enrichEvents(events: ChangeEvent[]): ChangeEvent[] {
-    if (!this.options.showBefore) return events;
-
-    const db = this.openDb();
-    const enriched: ChangeEvent[] = [];
-
-    for (const event of events) {
-      if (event.operation === 'DELETE') {
-        enriched.push(event);
-        continue;
-      }
-
-      try {
-        const results = db.exec(`SELECT * FROM "${event.table}" WHERE rowid = ${event.rowid}`);
-        if (results.length > 0 && results[0].values.length > 0) {
-          const columns = results[0].columns;
-          const row = results[0].values[0];
-          const record: Record<string, unknown> = {};
-          for (let i = 0; i < columns.length; i++) {
-            const val = row[i];
-            if (val instanceof Uint8Array) {
-              record[columns[i]] = `<blob ${val.length}B>`;
-            } else {
-              record[columns[i]] = val;
-            }
-          }
-          enriched.push({ ...event, after: record });
-        } else {
-          enriched.push(event);
-        }
-      } catch {
-        enriched.push(event);
-      }
-    }
-
-    db.close();
-    return enriched;
+    return events;
   }
 
   private createEvent(
@@ -212,8 +187,22 @@ export class SnapshotEngine {
     table: string,
     operation: ChangeEvent['operation'],
     rowid: number,
+    before?: Record<string, unknown>,
+    after?: Record<string, unknown>,
   ): ChangeEvent {
-    return { timestamp, database: this.dbPath, table, operation, rowid };
+    const event: ChangeEvent = { timestamp, database: this.dbPath, table, operation, rowid };
+    if (before) event.before = before;
+    if (after) event.after = after;
+    return event;
+  }
+
+  private extractRowData(row: Record<string, unknown>, hasRowid: boolean): Record<string, unknown> {
+    const data: Record<string, unknown> = {};
+    for (const key of Object.keys(row)) {
+      if (hasRowid && key === '_rowid_') continue;
+      data[key] = row[key];
+    }
+    return data;
   }
 
   private hashRow(row: Record<string, unknown>, hasRowid: boolean): string {
