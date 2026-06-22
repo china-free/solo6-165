@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "sql.js": "^1.11.0",
+    "chokidar": "^4.0.3",
     "commander": "^12.1.0"
   },
   "devDependencies": {

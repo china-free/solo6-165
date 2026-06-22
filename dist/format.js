@@ -50,9 +50,12 @@ function emitEvent(event, format, colorize) {
     process.stdout.write(output + '\n');
 }
 function emitStartupBanner(dbPath, options) {
+    const mode = options.isPolling
+        ? `Polling interval: ${options.pollIntervalMs}ms (fallback mode)`
+        : `Mode: OS file system events (inotify/kqueue/ReadDirectoryChanges)`;
     process.stderr.write(`\x1b[36m\x1b[1msqlite-cdc\x1b[0m - SQLite Change Data Capture\n` +
         `\x1b[2mMonitoring: ${dbPath}\x1b[0m\n` +
-        `\x1b[2mPoll interval: ${options.pollIntervalMs}ms | Verbose: ${options.verbose}\x1b[0m\n` +
+        `\x1b[2m${mode} | Verbose: ${options.verbose}\x1b[0m\n` +
         `\x1b[2mWaiting for changes...\n\x1b[0m`);
 }
 //# sourceMappingURL=format.js.map

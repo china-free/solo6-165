@@ -5,5 +5,6 @@ export declare function emitEvent(event: ChangeEvent, format: 'json' | 'pretty',
 export declare function emitStartupBanner(dbPath: string, options: {
     verbose: boolean;
     pollIntervalMs: number;
+    isPolling: boolean;
 }): void;
 //# sourceMappingURL=format.d.ts.map

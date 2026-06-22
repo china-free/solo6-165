@@ -38,6 +38,7 @@ const commander_1 = require("commander");
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const snapshot_1 = require("./snapshot");
+const watcher_1 = require("./watcher");
 const format_1 = require("./format");
 const program = new commander_1.Command();
 program
@@ -47,9 +48,11 @@ program
     .argument('<db-path>', 'Path to the SQLite database file')
     .option('-t, --include-tables <tables>', 'Comma-separated list of tables to monitor', '')
     .option('-x, --exclude-tables <tables>', 'Comma-separated list of tables to exclude', '')
-    .option('-p, --poll-interval <ms>', 'Polling interval in milliseconds', '50')
+    .option('-p, --poll-interval <ms>', 'Polling interval in milliseconds (only used with --force-poll)', '50')
+    .option('-d, --debounce <ms>', 'Debounce window for coalescing rapid file events', '20')
     .option('-f, --format <format>', 'Output format: json or pretty', 'json')
     .option('--before', 'Include before/after row data in events', false)
+    .option('--force-poll', 'Use stat polling instead of OS file system events (for network/NFS mounts)', false)
     .option('--no-color', 'Disable colored output', false)
     .option('-v, --verbose', 'Enable verbose logging', false)
     .action(async (dbPathArg, opts) => {
@@ -65,6 +68,8 @@ program
         includeTables,
         excludeTables,
         pollIntervalMs: parseInt(opts.pollInterval, 10) || 50,
+        debounceMs: parseInt(opts.debounce, 10) || 20,
+        forcePoll: opts.forcePoll === true,
         verbose: opts.verbose,
         showBefore: opts.before,
         colorize: opts.color !== false && process.stdout.isTTY,
@@ -83,22 +88,14 @@ async function startMonitoring(options, format) {
         process.stderr.write(`Error: Failed to read database: ${err.message}\n`);
         process.exit(1);
     }
-    (0, format_1.emitStartupBanner)(options.dbPath, options);
-    let lastDbMtimeMs = fs.statSync(options.dbPath).mtimeMs;
-    let lastDbSize = fs.statSync(options.dbPath).size;
-    let lastWalMtimeMs = 0;
-    let lastWalSize = 0;
-    const walPath = options.dbPath + '-wal';
-    try {
-        if (fs.existsSync(walPath)) {
-            const ws = fs.statSync(walPath);
-            lastWalMtimeMs = ws.mtimeMs;
-            lastWalSize = ws.size;
-        }
-    }
-    catch { }
+    (0, format_1.emitStartupBanner)(options.dbPath, {
+        ...options,
+        isPolling: options.forcePoll,
+    });
     let dirty = false;
     let processing = false;
+    let fileWatcher = null;
+    let pollTimer = null;
     const checkAndDiff = () => {
         if (processing) {
             dirty = true;
@@ -125,7 +122,67 @@ async function startMonitoring(options, format) {
             }
         }
     };
-    const pollTimer = setInterval(() => {
+    const cleanup = () => {
+        if (options.verbose) {
+            process.stderr.write('[cdc] shutting down...\n');
+        }
+        if (fileWatcher) {
+            fileWatcher.stop();
+            fileWatcher = null;
+        }
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        snapshotEngine.close();
+        process.exit(0);
+    };
+    if (options.forcePoll) {
+        pollTimer = startPolling(options, checkAndDiff, () => {
+            if (options.verbose) {
+                process.stderr.write('[cdc] polling fallback active\n');
+            }
+        });
+    }
+    else {
+        fileWatcher = new watcher_1.FileWatcher(options.dbPath, (_dbPath) => {
+            checkAndDiff();
+        }, options, (err) => {
+            if (options.verbose) {
+                process.stderr.write(`[watcher] OS events unavailable, falling back to polling: ${err instanceof Error ? err.message : String(err)}\n`);
+            }
+            if (fileWatcher) {
+                fileWatcher.stop();
+                fileWatcher = null;
+            }
+            pollTimer = startPolling(options, checkAndDiff);
+        });
+        fileWatcher.start();
+    }
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+    process.on('SIGHUP', cleanup);
+    process.stdin.on('end', () => {
+        cleanup();
+    });
+}
+function startPolling(options, checkAndDiff, onStart) {
+    if (onStart)
+        onStart();
+    let lastDbMtimeMs = fs.statSync(options.dbPath).mtimeMs;
+    let lastDbSize = fs.statSync(options.dbPath).size;
+    let lastWalMtimeMs = 0;
+    let lastWalSize = 0;
+    const walPath = options.dbPath + '-wal';
+    try {
+        if (fs.existsSync(walPath)) {
+            const ws = fs.statSync(walPath);
+            lastWalMtimeMs = ws.mtimeMs;
+            lastWalSize = ws.size;
+        }
+    }
+    catch { }
+    return setInterval(() => {
         let changed = false;
         try {
             const stat = fs.statSync(options.dbPath);
@@ -151,20 +208,6 @@ async function startMonitoring(options, format) {
             checkAndDiff();
         }
     }, options.pollIntervalMs);
-    const cleanup = () => {
-        if (options.verbose) {
-            process.stderr.write('[cdc] shutting down...\n');
-        }
-        clearInterval(pollTimer);
-        snapshotEngine.close();
-        process.exit(0);
-    };
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
-    process.on('SIGHUP', cleanup);
-    process.stdin.on('end', () => {
-        cleanup();
-    });
 }
 program.parse();
 //# sourceMappingURL=cli.js.map

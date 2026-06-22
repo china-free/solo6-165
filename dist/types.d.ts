@@ -24,6 +24,8 @@ export interface MonitorOptions {
     verbose: boolean;
     showBefore: boolean;
     colorize: boolean;
+    forcePoll: boolean;
+    debounceMs: number;
 }
 export interface TableInfo {
     name: string;
