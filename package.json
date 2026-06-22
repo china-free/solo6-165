@@ -1,0 +1,24 @@
+{
+  "name": "sqlite-cdc",
+  "version": "1.0.0",
+  "description": "Real-time SQLite change data capture CLI - monitors .db/.wal files and emits JSON event streams for INSERT/UPDATE/DELETE",
+  "main": "dist/cli.js",
+  "bin": {
+    "sqlite-cdc": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "dev": "ts-node src/cli.ts",
+    "test": "node test/e2e.test.js"
+  },
+  "dependencies": {
+    "sql.js": "^1.11.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "ts-node": "^10.9.2"
+  }
+}
